@@ -1,0 +1,9 @@
+---
+all:
+  hosts:
+    host_1:
+      ansible_host: 192.168.0.1
+  vars:
+    created_username: username
+    ssh_pubkey_path: /home/username/.ssh/id_rsa.pub
+    ansible_python_interpreter: /usr/bin/python3

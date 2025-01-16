@@ -1,0 +1,43 @@
+# audit.rules.j2
+# Delete all existing rules
+-D
+
+# Set buffer size
+-b 8192
+
+# Failure mode
+-f 1
+
+# Monitor arch specific system calls
+-a exit,always -F arch=b64 -S execve -k exec
+-a exit,always -F arch=b32 -S execve -k exec
+
+# Monitor file system mounts
+-a always,exit -F arch=b64 -S mount -S umount2 -k mount
+-a always,exit -F arch=b32 -S mount -S umount -S umount2 -k mount
+
+# Monitor changes to system authentication
+-w /etc/group -p wa -k identity
+-w /etc/passwd -p wa -k identity
+-w /etc/gshadow -p wa -k identity
+-w /etc/shadow -p wa -k identity
+-w /etc/security/opasswd -p wa -k identity
+
+# Monitor changes to sudoers
+-w /etc/sudoers -p wa -k sudo_log
+-w /etc/sudoers.d/ -p wa -k sudo_log
+
+# Monitor changes to SSH configuration
+-w /etc/ssh/sshd_config -p wa -k sshd
+-w /etc/ssh/sshd_config.d/ -p wa -k sshd
+
+# Docker specific monitoring
+-w /usr/bin/docker -p wa -k docker
+-w /var/lib/docker -p wa -k docker
+-w /etc/docker -p wa -k docker
+-w /usr/lib/systemd/system/docker.service -p wa -k docker
+-w /usr/lib/systemd/system/docker.socket -p wa -k docker
+-w /etc/default/docker -p wa -k docker
+-w /etc/docker/daemon.json -p wa -k docker
+-w /usr/bin/docker-containerd -p wa -k docker
+-w /usr/bin/docker-runc -p wa -k docker

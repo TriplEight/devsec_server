@@ -1,0 +1,21 @@
+# AIDE configuration
+database=file:/var/lib/aide/aide.db
+database_out=file:/var/lib/aide/aide.db.new
+database_new=file:/var/lib/aide/aide.db.new
+
+# Define groups of files to monitor
+Binlib = p+i+n+u+g+s+b+m+c+md5+sha1
+Logs = p+i+n+u+g+S
+Config = p+i+n+u+g+s+b+m+c+md5+sha1
+Databases = p+i+n+u+g
+
+# Rules
+/bin Binlib
+/sbin Binlib
+/usr/bin Binlib
+/usr/sbin Binlib
+/etc Config
+/usr/lib Binlib
+/usr/lib64 Binlib
+/var/log Logs
+/var/lib/docker Databases

@@ -1,0 +1,27 @@
+[DEFAULT]
+bantime = {{ fail2ban_bantime }}
+findtime = {{ fail2ban_findtime }}
+maxretry = {{ fail2ban_maxretry }}
+banaction = iptables-multiport
+ignoreip = 127.0.0.1/8 ::1
+
+[sshd]
+enabled = true
+filter = sshd
+logpath = /var/log/auth.log
+maxretry = {{ fail2ban_maxretry }}
+
+[docker]
+enabled = true
+chain = DOCKER-USER
+filter = docker
+logpath = /var/log/auth.log
+maxretry = 5
+findtime = 600
+bantime = 3600
+
+[docker-action]
+banaction = iptables-multiport
+port = 2375,2376,2377,9443,8000
+protocol = tcp
+logpath = /var/log/auth.log

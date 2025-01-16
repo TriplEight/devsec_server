@@ -1,0 +1,331 @@
+---
+- name: Ubuntu 24.04 Security Hardening and DevOps Setup
+  hosts: all
+  become: yes
+  collections:
+    - devsec.hardening
+    - community.docker
+  vars:
+    timezone: "CET"
+    docker_users: ["{{ created_username }}"]
+    # fail2ban configuration
+    fail2ban_bantime: 3600
+    fail2ban_findtime: 600
+    fail2ban_maxretry: 3
+    # OS-hardening variables
+    # readme: https://github.com/dev-sec/ansible-collection-hardening/blob/master/roles/os_hardening/README.md
+    os_auth_retries: 3
+    os_auth_lockout_time: 600
+    os_user_pw_ageing: false
+    os_auth_pw_max_age: 99999
+    os_auth_pw_min_age: 1
+    # Additional sysctl hardening
+    sysctl_overwrite:
+      net.ipv4.ip_forward: 1  # Required for Docker
+      net.ipv4.conf.all.rp_filter: 1
+      net.ipv4.conf.default.rp_filter: 1
+      net.ipv4.icmp_echo_ignore_broadcasts: 1
+      net.ipv4.conf.all.accept_redirects: 0
+      net.ipv4.conf.default.accept_redirects: 0
+      net.ipv4.conf.all.secure_redirects: 0
+      net.ipv4.conf.default.secure_redirects: 0
+      net.ipv6.conf.all.accept_redirects: 0
+      net.ipv6.conf.default.accept_redirects: 0
+      net.ipv4.conf.all.send_redirects: 0
+      net.ipv4.conf.default.send_redirects: 0
+      net.ipv4.icmp_ignore_bogus_error_responses: 1
+      kernel.randomize_va_space: 2
+      kernel.audit_backlog_limit: 8192
+      kernel.audit_backlog_wait_time: 0
+    # SSH-hardening variables
+    # readme: https://github.com/dev-sec/ansible-collection-hardening/blob/master/roles/ssh_hardening/README.md
+    ssh_allow_users: "{{ created_username }}"
+    ssh_allow_groups: "sudo"
+    ssh_max_auth_tries: 3
+    ssh_permit_root_login: "no"
+    ssh_permit_empty_passwords: "no"
+    ssh_password_authentication: "no"  # Force key-based auth
+    ssh_client_alive_interval: 300
+    ssh_client_alive_count_max: 2
+    ssh_use_pam: "yes"
+    ssh_allow_agent_forwarding: "no"
+    ssh_allow_tcp_forwarding: "no"
+    ssh_x11_forwarding: "no"
+
+  pre_tasks:
+    - name: Update apt cache
+      apt:
+        update_cache: yes
+        cache_valid_time: 3600
+
+    - name: Install required packages
+      apt:
+        name:
+          - unattended-upgrades
+          - docker.io
+          - docker-compose
+          - python3-pip
+          - chrony
+          - logwatch
+          - python3-docker
+          - aptitude
+          - curl
+          - wget
+          - vim
+          - git
+          - fail2ban
+          - acl  # For file permissions management
+          - aide  # Host-based IDS
+          - auditd  # System auditing
+          - apparmor-utils  # AppArmor utilities
+          - needrestart  # Check for pending restarts
+          - rkhunter  # Rootkit detection
+          - lynis  # Security auditing
+          - ufw  # Firewall
+          - openssh-server  # Ensure latest SSH server
+          - ca-certificates  # SSL/TTLS certificates
+          - gnupg  # For package signing
+          - libpam-pwquality  # Password quality checking
+        state: present
+
+    - name: Create a new regular user with sudo privileges
+      ansible.builtin.user:
+        name: "{{ created_username }}"
+        state: present
+        groups: sudo
+        append: true
+        create_home: true
+        shell: /bin/bash
+        comment: "Admin User"
+
+    - name: Copy SSH public key to authorized_keys
+      ansible.builtin.copy:
+        content: "{{ lookup('file', ssh_pubkey_path) }}"
+        dest: "/home/{{ created_username }}/.ssh/authorized_keys"
+        owner: "{{ created_username }}"
+        group: "{{ created_username }}"
+        mode: 0600
+
+    - name: Configure secure sudo
+      ansible.builtin.lineinfile:
+        path: /etc/sudoers
+        state: present
+        regexp: '^%sudo'
+        line: '%sudo ALL=(ALL) NOPASSWD: ALL, !/bin/su, !/usr/bin/passwd, !/usr/bin/chsh'
+        validate: '/usr/sbin/visudo -cf %s'
+
+  tasks:
+    - name: Configure AIDE
+      template:
+        src: templates/aide.conf.j2
+        dest: /etc/aide/aide.conf
+        mode: '0644'
+
+    - name: Configure auditd
+      template:
+        src: templates/audit.rules.j2
+        dest: /etc/audit/rules.d/audit.rules
+        mode: 0600
+      notify: restart auditd
+
+    - name: Initialize AIDE database
+      command: aide --config /etc/aide/aide.conf --init
+      args:
+        creates: /var/lib/aide/aide.db.new
+      register: aide_init
+
+    - name: Move new AIDE database
+      command: mv /var/lib/aide/aide.db.new /var/lib/aide/aide.db
+      when: aide_init.changed
+
+    - name: Configure fail2ban
+      template:
+        src: templates/jail.local.j2
+        dest: /etc/fail2ban/jail.local
+        mode: 0644
+      notify: restart fail2ban
+
+    - name: Create fail2ban Docker filter
+      copy:
+        dest: /etc/fail2ban/filter.d/docker.conf
+        content: |
+          [Definition]
+          failregex = ^.* failed to login .* from <HOST>
+          ignoreregex =
+        mode: 0644
+      notify: restart fail2ban
+
+    - name: Configure unattended-upgrades
+      template:
+        src: templates/50unattended-upgrades.j2
+        dest: /etc/apt/apt.conf.d/50unattended-upgrades
+        mode: 0644
+
+    - name: Configure auto-upgrades
+      template:
+        src: templates/20auto-upgrades.j2
+        dest: /etc/apt/apt.conf.d/20auto-upgrades
+        mode: 0644
+
+    - name: Set up AppArmor profile for Docker
+      template:
+        src: templates/docker-profile.j2
+        dest: /etc/apparmor.d/docker
+        mode: 0644
+      notify: reload apparmor
+
+    # Docker Security
+    - name: Create docker group
+      ansible.builtin.group:
+        name: docker
+        state: present
+
+    - name: Add users to docker group
+      ansible.builtin.user:
+        name: "{{ item }}"
+        groups: docker
+        append: yes
+      with_items: "{{ docker_users }}"
+
+    - name: Create Docker daemon configuration
+      copy:
+        content: |
+          {
+            "log-driver": "journald",
+            "log-opts": {
+              "tag": "{% raw %}{{.Name}}{% endraw %}"
+            },
+            "live-restore": true,
+            "userland-proxy": false,
+            "no-new-privileges": true,
+            "default-ulimits": {
+              "nofile": {
+                "Name": "nofile",
+                "Hard": 64000,
+                "Soft": 64000
+              }
+            }
+          }
+        dest: /etc/docker/daemon.json
+        mode: 0600
+      notify: restart docker
+
+    # Portainer Installation
+    - name: Create Portainer volume
+      community.docker.docker_volume:
+        name: portainer_data
+        state: present
+
+    - name: Deploy Portainer
+      community.docker.docker_container:
+        name: portainer
+        image: portainer/portainer-ee:latest
+        restart_policy: always
+        volumes:
+          - /var/run/docker.sock:/var/run/docker.sock
+          - portainer_data:/data
+        ports:
+          - "9443:9443"
+        labels:
+          traefik.enable: "true"
+          com.docker.compose.project: "portainer"
+        security_opts:
+          - no-new-privileges:true
+          - apparmor=docker-default
+        read_only: true
+        healthcheck:
+          test: ["CMD", "wget", "-q", "--spider", "http://localhost:9443"]
+          interval: 30s
+          timeout: 10s
+          retries: 3
+          start_period: 30s
+    
+    - name: Deploy Portainer Agent
+      community.docker.docker_container:
+        name: portainer_agent
+        image: portainer/agent:latest
+        restart_policy: always
+        volumes:
+          - /var/run/docker.sock:/var/run/docker.sock
+          - /var/lib/docker/volumes:/var/lib/docker/volumes
+          - /:/host
+        ports:
+          # - "8000:8000"
+          - "9001:9001"
+        labels:
+          traefik.enable: "true"
+          com.docker.compose.project: "portainer"
+        security_opts:
+          - no-new-privileges:true
+          - apparmor=docker-default
+        read_only: true
+        healthcheck:
+          test: ["CMD", "wget", "-q", "--spider", "http://localhost:8000"]
+          interval: 30s
+          timeout: 10s
+          retries: 3
+          start_period: 30s
+
+    - name: Set up logrotate for Docker containers
+      copy:
+        dest: /etc/logrotate.d/docker-containers
+        content: |
+          /var/lib/docker/containers/*/*.log {
+            rotate 7
+            daily
+            compress
+            size=50M
+            missingok
+            delaycompress
+            copytruncate
+          }
+        mode: 0644
+
+    - name: Configure UFW
+      ufw:
+        rule: allow
+        port: "{{ item }}"
+        proto: tcp
+      loop:
+        - "9443"  # Portainer HTTPS
+        - "8000"  # Portainer agent
+      
+    - name: Enable UFW
+      ufw:
+        state: enabled
+        policy: deny
+
+    - name: Configure PAM password quality
+      lineinfile:
+        path: /etc/security/pwquality.conf
+        regexp: "{{ item.regexp }}"
+        line: "{{ item.line }}"
+      loop:
+        - { regexp: '^minlen', line: 'minlen = 14' }
+        - { regexp: '^dcredit', line: 'dcredit = -1' }
+        - { regexp: '^ucredit', line: 'ucredit = -1' }
+        - { regexp: '^lcredit', line: 'lcredit = -1' }
+        - { regexp: '^ocredit', line: 'ocredit = -1' }
+
+  roles:
+    - devsec.hardening.os_hardening
+    - devsec.hardening.ssh_hardening
+
+  handlers:
+    - name: restart fail2ban
+      service:
+        name: fail2ban
+        state: restarted
+
+    - name: restart auditd
+      service:
+        name: auditd
+        state: restarted
+
+    - name: reload apparmor
+      command: systemctl reload apparmor
+
+    - name: restart docker
+      service:
+        name: docker
+        state: restarted
