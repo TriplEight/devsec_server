@@ -1,5 +1,7 @@
 #!/bin/bash
 
+# run this script with sudo!
+
 # Define the domain you already have hosted on Cloudflare DNS
 CLOUDFLARE_DNS_NAME="YOUR.DOMAIN.COM"
 # Adapt your domain to GCP naming conventions
